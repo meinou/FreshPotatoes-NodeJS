@@ -24,6 +24,7 @@ app.use(function (err, req, res, next) {
 
 // CONST
 const DEFAULT_PAGE_LIMIT = 10;
+const DEFAULT_PAGE_OFFSET = 0;
 const YEARS_BACK_AND_FORWARD_TO_SEARCH_FOR = 15;
 
 // ROUTE HANDLER
@@ -34,6 +35,7 @@ function getFilmRecommendations(req, res) {
 
   if (filmId && (limit >= 0 || limit == undefined) && (offset >= 0 || offset == undefined)) {
     limit = limit || DEFAULT_PAGE_LIMIT;
+    offset = offset || DEFAULT_PAGE_OFFSET;
 
     getFilmById(filmId)
       .then((film) => {
@@ -74,10 +76,10 @@ function getFilmRecommendations(req, res) {
 
                   filtered.sort((a,b) => a.id - b.id);
 
-                  filtered.splice(0, offset)
-                  filtered = filtered.slice(0, filtered.length > limit ? limit : filtered.length)
+                  filtered.splice(0, filtered.length > offset ? offset : filtered.length);
+                  filtered = filtered.slice(0, filtered.length > limit ? limit : filtered.length);
 
-                  res.json({ recommendations: filtered, meta: { limit: limit ? limit : 0, offset: offset ? offset : 0 } });
+                  res.json({ recommendations: filtered, meta: { limit, offset } });
                 });
 
               } else {
@@ -93,16 +95,16 @@ function getFilmRecommendations(req, res) {
         }
         
       }).catch((err) => {
-        sendError(res, 400, err);
+        sendError(res, 400, 'Error retrieving data.', err);
       });
   } else {
     sendError(res, 422, 'Please provide proper film id.');
   }
 }
 
-function sendError(res, code, message) {
-  console.error('ERROR: ', message);
-  res.status(code).json({ message });
+function sendError(res, code, message, err) {
+  console.error('ERROR: ', message, err);
+  res.status(code).json({ message, error: NODE_ENV === 'development' ? err : undefined });
 }
 
 function getYearsShiftDateString(date, shift) {
