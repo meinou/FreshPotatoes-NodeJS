@@ -26,7 +26,10 @@ app.use(function (err, req, res, next) {
 // ROUTE HANDLER
 function getFilmRecommendations(req, res) {
   const filmId = Number(req.params.id);
-  if (filmId) {
+  const limit = req.query.limit == undefined ? 'skip' : Number(req.params.limit);
+  const offset = req.query.offset == undefined ? 'skip' : Number(req.params.offset);
+
+  if (filmId && (limit >= 0 || limit == 'skip') && (offset >= 0 || offset == 'skip')) {
     getFilmById(filmId)
       .then((f) => {
         if (f && f.dataValues) {
@@ -49,10 +52,22 @@ function getFilmRecommendations(req, res) {
                     return;
                   }
 
-                  var filtered = results.filter(r => !!idToRating && idToRating[r.id]);
+                  let filtered = results.filter(r => !!idToRating && idToRating[r.id]);
                   for(let i = 0; i < filtered.length; i++) {
-                    filtered[i].averageRating = Math.round(idToRating[filtered[i].id]);
+                    filtered[i].averageRating = precisionRound(idToRating[filtered[i].id].averageRating, 2);
+                    filtered[i].reviews = idToRating[filtered[i].id].totalReviews;
                   }
+
+                  filtered = filtered.map(f => {
+                    return {
+                      averageRating: f.averageRating,
+                      id: f.id,
+                      releaseDate: f.release_date,
+                      reviews: f.reviews,
+                      title: f.title
+                    };
+                  });
+
                   filtered.sort((a,b) => a.id - b.id);
 
                   res.json({ recommendations: filtered });
@@ -114,6 +129,11 @@ function getYearsShiftDateString(date, shift) {
   return newDate.toISOString().split('T')[0];
 }
 
+function precisionRound(n, precision) {
+  const factor = Math.pow(10, precision);
+  return Math.round(n * factor) / factor;
+}
+
 function getFilmById(filmId) {
   return Films.findById(filmId);
 }
@@ -133,24 +153,24 @@ function getFilmByGenre(genre_id, fromDate, toDate) {
 
 const API_URL = 'http://credentials-api.generalassemb.ly/4576f55f-c427-4cfc-a11c-5bfe914ca6c1';
 
-function getReviews (filmId, callback) {
-  request(`${ API_URL }?films=${ filmId }`, (err, response, body) => {
-    const reviewedFilms = JSON.parse(body);
+function getReviews (filmIds, callback) {
+  request(`${ API_URL }?films=${ filmIds.join() }`, (err, response, body) => {
+    const films = JSON.parse(body);
  
     const atLeastFiveReviews = films.filter(f => f.reviews && f.reviews.length && f.reviews.length >= 5);
 
     const averageCalculated = atLeastFiveReviews.map(f => {
-    return {
-      id: f.film_id,
-      averageRating: (f.reviews && f.reviews.length ? f.reviews.reduce((sum, review) => sum + parseFloat(review.rating), 0) / f.reviews.length : 0),
-      reviews: f.reviews && f.reviews.length ? f.reviews.length : 0
-    }
+      return {
+        id: f.film_id,
+        averageRating: (f.reviews && f.reviews.length ? f.reviews.reduce((sum, review) => sum + parseFloat(review.rating), 0) / f.reviews.length : 0),
+        totalReviews: f.reviews && f.reviews.length ? f.reviews.length : 0
+      }
     });
     
     const filtered = averageCalculated.filter(f => f.averageRating > 4);
 
     const idToRating = {};
-    filtered.map(f => idToRating[f.id] = f.averageRating);
+    filtered.map(f => idToRating[f.id] = { averageRating: f.averageRating, totalReviews: f.totalReviews });
 
     if (callback) {
       callback(idToRating);
