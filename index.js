@@ -14,54 +14,67 @@ Promise.resolve()
 // ROUTES
 app.get('/films/:id/recommendations', getFilmRecommendations);
 
+app.use(function (req, res, next) {
+  sendError(res, 404, 'This is not valid api method. Please try /films/id/recommendations');
+});
+
+app.use(function (err, req, res, next) {
+  console.error(err.stack)
+  sendError(res, 500, 'Internal server error.');
+})
+
 // ROUTE HANDLER
 function getFilmRecommendations(req, res) {
   const filmId = Number(req.params.id);
-  console.log('filmId',filmId);
   if (filmId) {
     getFilmById(filmId)
       .then((f) => {
-        console.log('FILM: ', f.dataValues);
-        if (f&&f.dataValues) {
-          const genreId = Number(f.dataValues.genre_id);
-          console.log('genre_id: ', genreId);
-          
+        if (f && f.dataValues) {
+          const genreId = Number(f.dataValues.genre_id);         
           const releaseDate = new Date(f.dataValues.release_date);
           const fromDate = getYearsShiftDateString(releaseDate, -15);
           const toDate = getYearsShiftDateString(releaseDate, 15);
-          
-          console.log('fromDate: ', fromDate);
-          console.log('toDate: ', toDate);
 
-          getFilmByGenre(genreId, fromDate, toDate, 4)
+          getFilmByGenre(genreId, fromDate, toDate)
             .then((results) => {
               if (results) {
-                console.log('results: ', results);
-                res.json(results);
+
+                const ids = results.map(r => r.id);
+                //console.log('ids', ids);
+
+                getReviews(ids, (idToRating) => {
+
+                  if (!idToRating) {
+                    sendError(res, 404, `Recommendations based on film with id ${filmId} were not found.`);
+                    return;
+                  }
+
+                  var filtered = results.filter(r => !!idToRating && idToRating[r.id]);
+                  for(let i = 0; i < filtered.length; i++) {
+                    filtered[i].averageRating = Math.round(idToRating[filtered[i].id]);
+                  }
+                  filtered.sort((a,b) => a.id - b.id);
+
+                  res.json({ recommendations: filtered });
+                });
+
               } else {
                 sendError(res, 404, `Recommendations based on film with id ${filmId} were not found.`);
               }
             })
             .catch((err) => {
-              console.error('ERROR: ', err);
               sendError(res, 400, err);
             });
-          } else {
-            sendError(res, 404, `Film with id ${filmId} is not found.`);
-          }
-          
-        }).catch((err) => {
-          console.error('ERROR: ', err);
-          sendError(res, 400, err);
-        });
-          
-  } else {
-    res.status(403).send('Please provide proper film id.');
-  }
-}
 
-function sendError(res, code, message) {
-  res.status(code, { message });
+        } else {
+          sendError(res, 404, `Film with id ${filmId} is not found.`);
+        }       
+      }).catch((err) => {
+        sendError(res, 400, err);
+      });         
+  } else {
+    sendError(res, 403, 'Please provide proper film id.');
+  }
 }
 
 // SQL functions ==============================================================
@@ -89,21 +102,30 @@ const Films = sequelize.define('films', {
   timestamps: false
 });
 
-function getFilmById (filmId) {
+// === functions ==============================================================
+function sendError(res, code, message) {
+  console.error('ERROR: ', message);
+  res.status(code).json({ message });
+}
+
+function getYearsShiftDateString(date, shift) {
+  const localDate = new Date(date);
+  const newDate = new Date(localDate.setFullYear(date.getFullYear() + shift));
+  return newDate.toISOString().split('T')[0];
+}
+
+function getFilmById(filmId) {
   return Films.findById(filmId);
 }
 
-function getFilmByGenre(genre_id, fromDate, toDate, minRating) {
+function getFilmByGenre(genre_id, fromDate, toDate) {
   return Films.findAll({
     where: { 
       genre_id,
       release_date: {
         $lte: toDate,
         $gte: fromDate
-      },
-      // rating: {
-      //   $gte: minRating
-      // }
+      }
     },
     raw: true
   });
@@ -111,18 +133,30 @@ function getFilmByGenre(genre_id, fromDate, toDate, minRating) {
 
 const API_URL = 'http://credentials-api.generalassemb.ly/4576f55f-c427-4cfc-a11c-5bfe914ca6c1';
 
-function getReviews (filmId) {
+function getReviews (filmId, callback) {
   request(`${ API_URL }?films=${ filmId }`, (err, response, body) => {
     const reviewedFilms = JSON.parse(body);
+ 
+    const atLeastFiveReviews = films.filter(f => f.reviews && f.reviews.length && f.reviews.length >= 5);
+
+    const averageCalculated = atLeastFiveReviews.map(f => {
+    return {
+      id: f.film_id,
+      averageRating: (f.reviews && f.reviews.length ? f.reviews.reduce((sum, review) => sum + parseFloat(review.rating), 0) / f.reviews.length : 0),
+      reviews: f.reviews && f.reviews.length ? f.reviews.length : 0
+    }
+    });
     
-    console.log(reviewedFilms);
+    const filtered = averageCalculated.filter(f => f.averageRating > 4);
+
+    const idToRating = {};
+    filtered.map(f => idToRating[f.id] = f.averageRating);
+
+    if (callback) {
+      callback(idToRating);
+    }
   });
     
 }
-
-getReviews(4);
-getReviews(0);
-getReviews(100);
-getReviews(50);
 
 module.exports = app;
