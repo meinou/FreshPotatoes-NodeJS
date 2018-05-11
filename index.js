@@ -26,10 +26,10 @@ app.use(function (err, req, res, next) {
 // ROUTE HANDLER
 function getFilmRecommendations(req, res) {
   const filmId = Number(req.params.id);
-  const limit = req.query.limit == undefined ? 'skip' : Number(req.params.limit);
-  const offset = req.query.offset == undefined ? 'skip' : Number(req.params.offset);
+  const limit = req.query.limit == undefined ? undefined : Number(req.query.limit);
+  const offset = req.query.offset == undefined ? undefined : Number(req.query.offset);
 
-  if (filmId && (limit >= 0 || limit == 'skip') && (offset >= 0 || offset == 'skip')) {
+  if (filmId && (limit >= 0 || limit == undefined) && (offset >= 0 || offset == undefined)) {
     getFilmById(filmId)
       .then((f) => {
         if (f && f.dataValues) {
@@ -43,7 +43,6 @@ function getFilmRecommendations(req, res) {
               if (results) {
 
                 const ids = results.map(r => r.id);
-                //console.log('ids', ids);
 
                 getReviews(ids, (idToRating) => {
 
@@ -70,7 +69,7 @@ function getFilmRecommendations(req, res) {
 
                   filtered.sort((a,b) => a.id - b.id);
 
-                  res.json({ recommendations: filtered });
+                  res.json({ recommendations: filtered, meta: { limit: limit ? limit : 0, offset: offset ? offset : 0 } });
                 });
 
               } else {
