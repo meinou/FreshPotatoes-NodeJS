@@ -6,6 +6,7 @@ const sqlite = require('sqlite'),
 
 const { PORT=3000, NODE_ENV='development', DB_PATH='./db/database.db' } = process.env;
 
+
 // START SERVER
 Promise.resolve()
   .then(() => app.listen(PORT, () => console.log(`App listening on port ${PORT}`)))
@@ -13,35 +14,38 @@ Promise.resolve()
 
 // ROUTES
 app.get('/films/:id/recommendations', getFilmRecommendations);
-
 app.use(function (req, res, next) {
   sendError(res, 404, 'This is not valid api method. Please try /films/id/recommendations');
 });
-
 app.use(function (err, req, res, next) {
   console.error(err.stack)
   sendError(res, 500, 'Internal server error.');
 })
 
+// CONST
+const DEFAULT_PAGE_LIMIT = 10;
+const YEARS_BACK_AND_FORWARD_TO_SEARCH_FOR = 15;
+
 // ROUTE HANDLER
 function getFilmRecommendations(req, res) {
   const filmId = Number(req.params.id);
-  const limit = req.query.limit == undefined ? undefined : Number(req.query.limit);
-  const offset = req.query.offset == undefined ? undefined : Number(req.query.offset);
+  let limit = req.query.limit == undefined ? undefined : Number(req.query.limit);
+  let offset = req.query.offset == undefined ? undefined : Number(req.query.offset);
 
   if (filmId && (limit >= 0 || limit == undefined) && (offset >= 0 || offset == undefined)) {
+    limit = limit || DEFAULT_PAGE_LIMIT;
+
     getFilmById(filmId)
-      .then((f) => {
-        if (f && f.dataValues) {
-          const genreId = Number(f.dataValues.genre_id);         
-          const releaseDate = new Date(f.dataValues.release_date);
-          const fromDate = getYearsShiftDateString(releaseDate, -15);
-          const toDate = getYearsShiftDateString(releaseDate, 15);
+      .then((film) => {
+        if (film) {
+          const genreId = Number(film.genre_id);         
+          const releaseDate = new Date(film.releaseDate);
+          const fromDate = getYearsShiftDateString(releaseDate, -YEARS_BACK_AND_FORWARD_TO_SEARCH_FOR);
+          const toDate = getYearsShiftDateString(releaseDate, YEARS_BACK_AND_FORWARD_TO_SEARCH_FOR);
 
           getFilmByGenre(genreId, fromDate, toDate)
             .then((results) => {
               if (results) {
-
                 const ids = results.map(r => r.id);
 
                 getReviews(ids, (idToRating) => {
@@ -56,18 +60,22 @@ function getFilmRecommendations(req, res) {
                     filtered[i].averageRating = precisionRound(idToRating[filtered[i].id].averageRating, 2);
                     filtered[i].reviews = idToRating[filtered[i].id].totalReviews;
                   }
-
+                  
                   filtered = filtered.map(f => {
                     return {
                       averageRating: f.averageRating,
                       id: f.id,
-                      releaseDate: f.release_date,
+                      releaseDate: f.releaseDate,
                       reviews: f.reviews,
-                      title: f.title
+                      title: f.title,
+                      genre: f['genre.name']
                     };
                   });
 
                   filtered.sort((a,b) => a.id - b.id);
+
+                  filtered.splice(0, offset)
+                  filtered = filtered.slice(0, filtered.length > limit ? limit : filtered.length)
 
                   res.json({ recommendations: filtered, meta: { limit: limit ? limit : 0, offset: offset ? offset : 0 } });
                 });
@@ -79,44 +87,19 @@ function getFilmRecommendations(req, res) {
             .catch((err) => {
               sendError(res, 400, err);
             });
-
+          
         } else {
           sendError(res, 404, `Film with id ${filmId} is not found.`);
-        }       
+        }
+        
       }).catch((err) => {
         sendError(res, 400, err);
-      });         
+      });
   } else {
-    sendError(res, 403, 'Please provide proper film id.');
+    sendError(res, 422, 'Please provide proper film id.');
   }
 }
 
-// SQL functions ==============================================================
-const sequelize = new Sequelize('main', null, null, {
-  dialect: 'sqlite',
-  storage: DB_PATH,
-});
-
-// Define SQL models
-const Films = sequelize.define('films', {
-  id: {
-    type: Sequelize.INTEGER,
-    primaryKey: true
-  },
-  title: Sequelize.STRING,
-  release_date: Sequelize.STRING,
-  tagline: Sequelize.STRING,
-  revenue: Sequelize.INTEGER,
-  budget: Sequelize.INTEGER,
-  runtime: Sequelize.INTEGER,
-  original_language: Sequelize.STRING,
-  status: Sequelize.STRING,
-  genre_id: Sequelize.INTEGER,
-}, {
-  timestamps: false
-});
-
-// === functions ==============================================================
 function sendError(res, code, message) {
   console.error('ERROR: ', message);
   res.status(code).json({ message });
@@ -133,12 +116,55 @@ function precisionRound(n, precision) {
   return Math.round(n * factor) / factor;
 }
 
+
+// >>> SQL functions ==========================================================
+const sequelize = new Sequelize('main', null, null, {
+  dialect: 'sqlite',
+  storage: DB_PATH,
+});
+
+// Define SQL models
+const Films = sequelize.define('films', {
+  id: {
+    type: Sequelize.INTEGER,
+    primaryKey: true
+  },
+  title: Sequelize.STRING,
+  releaseDate: {
+    type: Sequelize.STRING,
+    field: 'release_date'
+  },
+  tagline: Sequelize.STRING,
+  revenue: Sequelize.INTEGER,
+  budget: Sequelize.INTEGER,
+  runtime: Sequelize.INTEGER,
+  original_language: Sequelize.STRING,
+  status: Sequelize.STRING,
+  genre_id: Sequelize.INTEGER,
+}, {
+  timestamps: false
+});
+
+const Genres = sequelize.define('genres', {
+  id: {
+    type: Sequelize.INTEGER,
+    primaryKey: true
+  },
+  name: Sequelize.STRING,
+}, {
+  timestamps: false
+});
+
+Films.belongsTo(Genres, { foreignKey: 'genre_id', }); 
+
+// === functions ==============================================================
 function getFilmById(filmId) {
   return Films.findById(filmId);
 }
 
 function getFilmByGenre(genre_id, fromDate, toDate) {
   return Films.findAll({
+    attributes: ['id', 'releaseDate', 'title', 'genre_id'],
     where: { 
       genre_id,
       release_date: {
@@ -146,16 +172,23 @@ function getFilmByGenre(genre_id, fromDate, toDate) {
         $gte: fromDate
       }
     },
-    raw: true
+    raw: true,
+    include: [{
+      model: Genres,
+      where: { id : genre_id }
+    }]
   });
 }
+// <<< SQL functions ==========================================================
 
+
+// >>> 3d party service  ======================================================
 const API_URL = 'http://credentials-api.generalassemb.ly/4576f55f-c427-4cfc-a11c-5bfe914ca6c1';
 
 function getReviews (filmIds, callback) {
   request(`${ API_URL }?films=${ filmIds.join() }`, (err, response, body) => {
+    
     const films = JSON.parse(body);
- 
     const atLeastFiveReviews = films.filter(f => f.reviews && f.reviews.length && f.reviews.length >= 5);
 
     const averageCalculated = atLeastFiveReviews.map(f => {
@@ -165,7 +198,7 @@ function getReviews (filmIds, callback) {
         totalReviews: f.reviews && f.reviews.length ? f.reviews.length : 0
       }
     });
-    
+
     const filtered = averageCalculated.filter(f => f.averageRating > 4);
 
     const idToRating = {};
@@ -174,8 +207,8 @@ function getReviews (filmIds, callback) {
     if (callback) {
       callback(idToRating);
     }
-  });
-    
+  });   
 }
+// <<< 3d party service  ======================================================
 
 module.exports = app;
