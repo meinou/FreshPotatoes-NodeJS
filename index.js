@@ -33,73 +33,66 @@ function getFilmRecommendations(req, res) {
   let limit = req.query.limit == undefined ? undefined : Number(req.query.limit);
   let offset = req.query.offset == undefined ? undefined : Number(req.query.offset);
 
-  if (filmId && (limit >= 0 || limit == undefined) && (offset >= 0 || offset == undefined)) {
-    limit = limit || DEFAULT_PAGE_LIMIT;
-    offset = offset || DEFAULT_PAGE_OFFSET;
+  if (!filmId || (Number.isNaN(limit) && limit != undefined) && (Number.isNaN(offset) && offset != undefined)) {
+    sendError(res, 422, 'Please provide proper film id.');
+    return;
+  }
+  limit = limit || DEFAULT_PAGE_LIMIT;
+  offset = offset || DEFAULT_PAGE_OFFSET;
 
-    getFilmById(filmId)
-      .then((film) => {
-        if (film) {
-          const genreId = Number(film.genre_id);         
-          const releaseDate = new Date(film.releaseDate);
-          const fromDate = getYearsShiftDateString(releaseDate, -YEARS_BACK_AND_FORWARD_TO_SEARCH_FOR);
-          const toDate = getYearsShiftDateString(releaseDate, YEARS_BACK_AND_FORWARD_TO_SEARCH_FOR);
+  getFilmById(filmId)
+    .then((film) => {
+      if (!film) {
+        sendError(res, 404, `Film with id ${filmId} is not found.`);
+        return;
+      }
+      const genreId = Number(film.genre_id);
+      const releaseDate = new Date(film.releaseDate);
+      const fromDate = getYearsShiftDateString(releaseDate, -YEARS_BACK_AND_FORWARD_TO_SEARCH_FOR);
+      const toDate = getYearsShiftDateString(releaseDate, YEARS_BACK_AND_FORWARD_TO_SEARCH_FOR);
+      return getFilmByGenre(genreId, fromDate, toDate);
+    })
+    .then((films) => {
+      if (!films) {
+        sendError(res, 404, `Recommendations based on film with id ${filmId} were not found.`);
+        return;
+      }
+      
+      const ids = films.map(r => r.id);
+      getFilmIdToRating(ids, (idToRating) => {
+        if (!idToRating) {
+          sendError(res, 404, `Recommendations based on film with id ${filmId} were not found.`);
+          return;
+        }
 
-          getFilmByGenre(genreId, fromDate, toDate)
-            .then((results) => {
-              if (results) {
-                const ids = results.map(r => r.id);
-
-                getReviews(ids, (idToRating) => {
-
-                  if (!idToRating) {
-                    sendError(res, 404, `Recommendations based on film with id ${filmId} were not found.`);
-                    return;
-                  }
-
-                  let filtered = results.filter(r => !!idToRating && idToRating[r.id]);
-                  for(let i = 0; i < filtered.length; i++) {
-                    filtered[i].averageRating = precisionRound(idToRating[filtered[i].id].averageRating, 2);
-                    filtered[i].reviews = idToRating[filtered[i].id].totalReviews;
-                  }
-                  
-                  filtered = filtered.map(f => {
-                    return {
-                      averageRating: f.averageRating,
-                      id: f.id,
-                      releaseDate: f.releaseDate,
-                      reviews: f.reviews,
-                      title: f.title,
-                      genre: f['genre.name']
-                    };
-                  });
-
-                  filtered.sort((a,b) => a.id - b.id);
-
-                  filtered.splice(0, filtered.length > offset ? offset : filtered.length);
-                  filtered = filtered.slice(0, filtered.length > limit ? limit : filtered.length);
-
-                  res.json({ recommendations: filtered, meta: { limit, offset } });
-                });
-
-              } else {
-                sendError(res, 404, `Recommendations based on film with id ${filmId} were not found.`);
-              }
-            })
-            .catch((err) => {
-              sendError(res, 400, err);
-            });
-          
-        } else {
-          sendError(res, 404, `Film with id ${filmId} is not found.`);
+        let filtered = films.filter(r => !!idToRating && idToRating[r.id]);
+        for(let i = 0; i < filtered.length; i++) {
+          filtered[i].averageRating = precisionRound(idToRating[filtered[i].id].averageRating, 2);
+          filtered[i].reviews = idToRating[filtered[i].id].totalReviews;
         }
         
-      }).catch((err) => {
-        sendError(res, 400, 'Error retrieving data.', err);
+        filtered = filtered.map(f => {
+          return {
+            averageRating: f.averageRating,
+            id: f.id,
+            releaseDate: f.releaseDate,
+            reviews: f.reviews,
+            title: f.title,
+            genre: f['genre.name']
+          };
+        });
+
+        filtered.sort((a,b) => a.id - b.id);
+
+        filtered.splice(0, filtered.length > offset ? offset : filtered.length);
+        filtered = filtered.slice(0, filtered.length > limit ? limit : filtered.length);
+
+        res.json({ recommendations: filtered, meta: { limit, offset } });
       });
-  } else {
-    sendError(res, 422, 'Please provide proper film id.');
-  }
+    })
+    .catch((err) => {
+      sendError(res, 400, 'Error retrieving data.', err);
+    });
 }
 
 function sendError(res, code, message, err) {
@@ -187,7 +180,7 @@ function getFilmByGenre(genre_id, fromDate, toDate) {
 // >>> 3d party service  ======================================================
 const API_URL = 'http://credentials-api.generalassemb.ly/4576f55f-c427-4cfc-a11c-5bfe914ca6c1';
 
-function getReviews (filmIds, callback) {
+function getFilmIdToRating (filmIds, callback) {
   request(`${ API_URL }?films=${ filmIds.join() }`, (err, response, body) => {
     
     const films = JSON.parse(body);
